@@ -695,6 +695,144 @@ function importMT5CSV(event) {
   reader.onload = function(e) {
     const content = e.target.result;
     let imported = 0;
+
+    // ===== FORMAT HTM/HTML =====
+    if(file.name.endsWith('.htm') || file.name.endsWith('.html')) {
+      const parser = new DOMParser();
+      const doc    = parser.parseFromString(content, 'text/html');
+      const rows   = doc.querySelectorAll('tr');
+
+      rows.forEach(row => {
+        const cells = Array.from(row.querySelectorAll('td')).map(c => c.textContent.trim());
+        if(cells.length < 5) return;
+
+        // Chercher une date MT5 dans les cellules
+        let dateStr='', timeVal='', symbol='', direction='', lots='', profit=0;
+        let foundDate = false;
+
+        cells.forEach((cell, idx) => {
+          // Détecter date format MT5: 2026.05.28 10:30:00
+          const dateMatch = cell.match(/(\d{4})\.(\d{2})\.(\d{2})\s+(\d{2}):(\d{2})/);
+          if(dateMatch && !foundDate) {
+            dateStr   = `${dateMatch[1]}-${dateMatch[2]}-${dateMatch[3]}`;
+            timeVal   = `${dateMatch[4]}:${dateMatch[5]}`;
+            foundDate = true;
+          }
+        });
+
+        if(!foundDate) return;
+
+        // Chercher le symbole (lettres majuscules 3-10 chars)
+        cells.forEach(cell => {
+          if(!symbol && cell.match(/^[A-Z]{3,10}(USD|EUR|GBP|JPY|CHF|CAD|AUD|NZD)?$/)) {
+            symbol = cell;
+          }
+        });
+
+        // Chercher direction
+        cells.forEach(cell => {
+          const low = cell.toLowerCase();
+          if(low === 'buy' || low === 'achat') direction = 'BUY';
+          if(low === 'sell' || low === 'vente') direction = 'SELL';
+        });
+
+        // Chercher profit (dernier nombre avec décimale)
+        for(let i = cells.length-1; i >= 0; i--) {
+          const num = parseFloat(cells[i].replace(/\s/g,'').replace(',','.'));
+          if(!isNaN(num) && cells[i].match(/[\-\d]+[,\.]\d{2}/)) {
+            profit = num; break;
+          }
+        }
+
+        // Chercher lots
+        cells.forEach(cell => {
+          const num = parseFloat(cell.replace(',','.'));
+          if(!isNaN(num) && num > 0 && num <= 100 && cell.match(/^\d+[\.,]\d+$/) && num !== profit) {
+            if(!lots) lots = cell;
+          }
+        });
+
+        if(!symbol || !direction) return;
+        if(isNaN(profit)) return;
+
+        const exists = trades.some(t => t.date===dateStr && t.pair===symbol && Math.abs(parseFloat(t.pnl)-profit)<0.01);
+        if(exists) return;
+
+        trades.push({
+          id:        Date.now() + Math.random(),
+          date:      dateStr,
+          time:      timeVal,
+          pair:      symbol || 'UNKNOWN',
+          direction: direction || 'BUY',
+          lots:      lots || '0.01',
+          pnl:       profit,
+          strategy:  'Import MT5',
+          notes:     'Importé depuis MT5',
+        });
+        imported++;
+      });
+    }
+
+    // ===== FORMAT CSV =====
+    else if(file.name.endsWith('.csv')) {
+      const lines = content.split('\n');
+      const sep = content.includes(';') ? ';' : content.includes('\t') ? '\t' : ',';
+
+      lines.forEach((line, idx) => {
+        if(idx === 0) return;
+        const cols = line.split(sep).map(c => c.trim().replace(/^"|"$/g,''));
+        if(cols.length < 6) return;
+
+        let dateStr='', timeVal='', symbol='', direction='', lots='', profit=0;
+
+        cols.forEach((cell, idx) => {
+          const dateMatch = cell.match(/(\d{4})[\.\-\/](\d{2})[\.\-\/](\d{2})\s*(\d{2})?:?(\d{2})?/);
+          if(dateMatch && !dateStr) {
+            dateStr = `${dateMatch[1]}-${dateMatch[2]}-${dateMatch[3]}`;
+            timeVal = dateMatch[4] ? `${dateMatch[4]}:${dateMatch[5]}` : '00:00';
+          }
+          if(cell.match(/^[A-Z]{3,10}$/) && !symbol) symbol = cell;
+          if(['buy','sell','achat','vente'].includes(cell.toLowerCase()) && !direction)
+            direction = cell.toLowerCase().includes('buy')||cell.toLowerCase().includes('achat') ? 'BUY' : 'SELL';
+        });
+
+        const lastNum = parseFloat(cols[cols.length-1].replace(',','.'));
+        if(!isNaN(lastNum)) profit = lastNum;
+
+        if(!dateStr || !symbol) return;
+
+        const exists = trades.some(t => t.date===dateStr && t.pair===symbol && Math.abs(parseFloat(t.pnl)-profit)<0.01);
+        if(exists) return;
+
+        trades.push({
+          id: Date.now()+Math.random(),
+          date: dateStr, time: timeVal,
+          pair: symbol, direction: direction||'BUY',
+          lots: lots||'0.01', pnl: profit,
+          strategy: 'Import MT5', notes: 'Importé depuis MT5',
+        });
+        imported++;
+      });
+    }
+
+    if(imported > 0) {
+      localStorage.setItem('tradingJournalTrades', JSON.stringify(trades));
+      renderCalendar();
+      showToast(`✅ ${imported} trade(s) importé(s) !`);
+    } else {
+      showToast(`⚠️ Aucun trade trouvé. Essaie le format "Générale" ou entre les trades manuellement.`);
+    }
+    event.target.value = '';
+  };
+  reader.readAsText(file, 'UTF-8');
+}
+  const file = event.target.files[0];
+  if(!file) return;
+
+  const reader = new FileReader();
+  reader.onload = function(e) {
+    const content = e.target.result;
+    let imported = 0;
     let errors   = 0;
 
     // ===== FORMAT HTM (rapport MT5 HTML) =====
